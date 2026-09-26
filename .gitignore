@@ -1,0 +1,15 @@
+config.py
+__pycache__/
+*.py[cod]
+*.log
+*.pid
+progress.json
+mistakes.db*
+*.bak
+*.before_*
+cache_*.py
+README.txt
+english_5000_ru_updated.txt
+slovak_russian_5000_frequency*.txt
+Английские_5500_слов_с_переводом.txt*
+audio/
