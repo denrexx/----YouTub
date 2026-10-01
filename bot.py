@@ -40,7 +40,7 @@ def load_words(path):
     words = []
     for expected_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         number, value = line.split(". ", 1)
-        word, translation = value.split(" - ", 1)
+        word, translation = (part.strip() for part in value.split(" - ", 1))
         if int(number) != expected_number or not word or not translation:
             raise ValueError(f"Invalid entry {expected_number} in {path}")
         words.append({"number": int(number), "word": word, "translation": translation})
@@ -353,7 +353,16 @@ def items_for_state(state):
     if state.get("mode") == "phrasal":
         return PHRASAL_VERBS
     if state.get("mode") == "unknowns":
-        return state.get("unknown_items", [])
+        items = state.get("unknown_items", [])
+        sources = {
+            "words": {item["word"]: item["translation"] for item in WORDS},
+            "phrasal": {item["word"]: item["translation"] for item in PHRASAL_VERBS},
+        }
+        for item in items:
+            translation = sources.get(item.get("collection"), {}).get(item["word"])
+            if translation is not None:
+                item["translation"] = translation
+        return items
     return WORDS
 
 
@@ -428,7 +437,6 @@ def send_question(chat_id, message_id=None):
     schedule_voice(
         chat_id,
         item["word"],
-        "elevenlabs",
         state["question_id"],
         state["send_voice"],
         notify=state["send_voice"],
@@ -612,9 +620,9 @@ def advance_question(chat_id, message_id):
         send_question(chat_id, message_id)
 
 
-def audio_path(word, mode):
+def audio_path(word):
     digest = hashlib.sha1(word.encode("utf-8")).hexdigest()
-    return AUDIO_DIR / mode / f"{digest}.ogg"
+    return AUDIO_DIR / "online" / f"{digest}.ogg"
 
 
 def delete_voice_messages(chat_id, state):
@@ -636,8 +644,8 @@ def delete_feedback_message(chat_id, state):
         pass
 
 
-def ensure_voice(word, mode):
-    target = audio_path(word, mode)
+def ensure_voice(word):
+    target = audio_path(word)
     target.parent.mkdir(parents=True, exist_ok=True)
     with VOICE_LOCK:
         if target.exists() and target.stat().st_size > 100:
@@ -653,10 +661,7 @@ def ensure_voice(word, mode):
 
     if create:
         try:
-            if mode == "online":
-                make_online_voice(word, target)
-            else:
-                make_offline_voice(word, target)
+            make_online_voice(word, target)
         finally:
             with VOICE_LOCK:
                 VOICE_JOBS.pop(target, None)
@@ -669,24 +674,6 @@ def ensure_voice(word, mode):
     return target
 
 
-def make_offline_voice(word, target):
-    temporary_id = f"{os.getpid()}.{threading.get_ident()}"
-    wav = target.with_name(f".{target.stem}.{temporary_id}.wav")
-    temporary = target.with_name(f".{target.stem}.{temporary_id}.ogg")
-    try:
-        subprocess.run(["espeak-ng", "-v", "en-us", "-s", "165", "-w", str(wav), word], check=True)
-        subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav), "-filter:a", "atempo=1.2", "-c:a", "libopus", "-b:a", "32k", str(temporary)],
-            check=True,
-        )
-        temporary.replace(target)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
-    finally:
-        wav.unlink(missing_ok=True)
-
-
 def make_online_voice(word, target):
     temporary_id = f"{os.getpid()}.{threading.get_ident()}"
     mp3 = target.with_name(f".{target.stem}.{temporary_id}.mp3")
@@ -695,7 +682,7 @@ def make_online_voice(word, target):
         wait_for_online_slot()
         for domain in ("us", "com"):
             try:
-                gTTS(text=word, lang="en", tld=domain, timeout=5).save(str(mp3))
+                gTTS(text=word.replace("/", " or "), lang="en", tld=domain, timeout=5).save(str(mp3))
                 break
             except Exception:
                 mp3.unlink(missing_ok=True)
@@ -733,7 +720,7 @@ def wait_for_online_slot():
         fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def schedule_voice(chat_id, word, mode, question_id, send_to_telegram, notify=False):
+def schedule_voice(chat_id, word, question_id, send_to_telegram, notify=False):
     key = (chat_id, question_id)
     with VOICE_LOCK:
         if key in VOICE_SENDS:
@@ -742,7 +729,7 @@ def schedule_voice(chat_id, word, mode, question_id, send_to_telegram, notify=Fa
 
     def run():
         try:
-            send_voice(chat_id, word, mode, question_id, send_to_telegram, notify)
+            send_voice(chat_id, word, question_id, send_to_telegram, notify)
         finally:
             with VOICE_LOCK:
                 VOICE_SENDS.discard(key)
@@ -767,21 +754,12 @@ def play_on_host(target):
         )
 
 
-def send_voice(chat_id, word, mode, question_id, send_to_telegram, notify=False):
+def send_voice(chat_id, word, question_id, send_to_telegram, notify=False):
     try:
         state = user_state(chat_id)
         if state.get("mode") == "idle" or state.get("question_id") != question_id:
             return
-        target = audio_path(word, mode)
-        if not target.exists() or target.stat().st_size <= 100:
-            target = audio_path(word, "online")
-        if not target.exists() or target.stat().st_size <= 100:
-            try:
-                target = ensure_voice(word, "online")
-            except Exception:
-                target = audio_path(word, "offline")
-        if not target.exists() or target.stat().st_size <= 100:
-            target = ensure_voice(word, "offline")
+        target = ensure_voice(word)
         state = user_state(chat_id)
         if state.get("mode") == "idle" or state.get("question_id") != question_id:
             return

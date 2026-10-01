@@ -13,3 +13,7 @@ english_5000_ru_updated.txt
 slovak_russian_5000_frequency*.txt
 Английские_5500_слов_с_переводом.txt*
 audio/
+
+# Publish the supported online cache utility and usage instructions.
+!cache_all_audio.py
+!README.txt
